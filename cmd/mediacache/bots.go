@@ -43,7 +43,7 @@ var botPatterns = []string{
 	// Image scrapers
 	"imagesift", "picscout", "tineye",
 
-	// Generic patterns
+	// Generic patterns (will be checked after social media whitelist)
 	"bot", "crawler", "spider", "scraper",
 	"headless", "phantom",
 }
@@ -121,10 +121,56 @@ var knownBots = map[string]bool{
 	"Insomnia":                        true,
 }
 
+// Legitimate social media/chat platform bots that should be allowed
+var legitimateSocialBots = []string{
+	// Discord
+	"discordbot",
+	
+	// Slack  
+	"slackbot", "slack-imgproxy",
+	
+	// Microsoft Teams
+	"microsoft teams", "msteams", "teams/", "skype for business",
+	
+	// Matrix protocol
+	"matrix", "synapse", "element",
+	
+	// Other legitimate preview bots
+	"telegrambot", "whatsapp", "signal",
+	
+	// Social platforms
+	"twitterbot", "facebookexternalhit", "linkedinbot",
+	
+	// Communication platforms  
+	"zulipbot", "rocket.chat", "mattermost",
+}
+
+// Check if a user agent is a legitimate social media bot
+func isLegitimateBot(userAgent string) bool {
+	if userAgent == "" {
+		return false
+	}
+
+	lowerUA := strings.ToLower(userAgent)
+	
+	for _, legitBot := range legitimateSocialBots {
+		if strings.Contains(lowerUA, legitBot) {
+			return true
+		}
+	}
+	
+	return false
+}
+
 // Check if a user agent indicates a bot
 func isBotUserAgent(userAgent string) bool {
 	if userAgent == "" {
 		return true // Empty user agent is suspicious
+	}
+
+	// First check if it's a legitimate social media bot
+	if isLegitimateBot(userAgent) {
+		return false // Allow legitimate social bots
 	}
 
 	lowerUA := strings.ToLower(userAgent)

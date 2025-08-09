@@ -22,6 +22,7 @@ var (
 	
 	// Logging configuration
 	knownBotLogFile      = getEnv("CACHE_KNOWN_BOT_LOG", "./logs/known_bots.jsonl")
+	legitimateBotLogFile = getEnv("CACHE_LEGITIMATE_BOT_LOG", "./logs/legitimate_bots.jsonl")
 	suspectedBotLogFile  = getEnv("CACHE_SUSPECTED_BOT_LOG", "./logs/suspected_bots.jsonl")
 	
 	// Whitelisted IPs (different from trusted proxies)
@@ -156,13 +157,17 @@ func trackRequest(clientIP, userAgent, path string) {
 	rateTrackerMutex.Lock()
 	ipData, exists := ipRateTracker[clientIP]
 	if !exists {
+		// Determine bot status
+		isKnownBot := isBotUserAgent(userAgent)
+		isLegitBot := isLegitimateBot(userAgent)
+		
 		ipData = &IPRateData{
 			IP:            clientIP,
 			FirstSeen:     time.Now(),
 			LastSeen:      time.Now(),
 			TotalRequests: 0,
 			UserAgents:    make(map[string]int64),
-			IsKnownBot:    isBotUserAgent(userAgent),
+			IsKnownBot:    isKnownBot || isLegitBot, // Track both as "known" bots
 		}
 		ipRateTracker[clientIP] = ipData
 	}
@@ -263,7 +268,11 @@ func (ip *IPRateData) calculateRate(buckets []TimeBucket, window time.Duration) 
 func (ip *IPRateData) checkForAnomalies(userAgent, path string) {
 	// Log known bots (for tracking legitimate bot activity)
 	if ip.IsKnownBot {
-		logBotActivity(ip.IP, userAgent, path, "known", ip.CurrentShortRate, ip.CurrentLongRate, ip.TotalRequests, "")
+		botType := "known"
+		if isLegitimateBot(userAgent) {
+			botType = "legitimate" // Distinguish legitimate social bots
+		}
+		logBotActivity(ip.IP, userAgent, path, botType, ip.CurrentShortRate, ip.CurrentLongRate, ip.TotalRequests, "")
 		return
 	}
 	
@@ -327,9 +336,12 @@ func logBotActivity(ip, userAgent, path, botType string, shortRate, longRate, to
 	}
 	
 	var logFile string
-	if botType == "known" {
+	switch botType {
+	case "known":
 		logFile = knownBotLogFile
-	} else {
+	case "legitimate":
+		logFile = legitimateBotLogFile
+	default: // "suspected"
 		logFile = suspectedBotLogFile
 	}
 	
