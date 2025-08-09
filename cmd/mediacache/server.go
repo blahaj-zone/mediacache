@@ -204,8 +204,9 @@ func handleCache(w http.ResponseWriter, r *http.Request) {
 }
 
 func serve() {
-	http.HandleFunc("/", handleCache)
+	http.HandleFunc("/", cdnBotBlockingMiddleware(handleCache))
 	http.HandleFunc("/healthz", getHealthz)
+	http.HandleFunc("/robots.txt", getRobotsTxt)
 
 	log.Fatal(http.ListenAndServe(listen, nil))
 }
