@@ -37,16 +37,16 @@ type BlocklistSource struct {
 // Default blocklist sources
 var defaultSources = []BlocklistSource{
 	{
-		Name:        "bitwire-ipblocklist",
-		URL:         "https://raw.githubusercontent.com/bitwire-it/ipblocklist/main/blocklist.txt",
+		Name:        "firehol-level1",
+		URL:         "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
 		Format:      "plain",
-		Description: "General bad IPs - updated every 2h",
-		UpdateFreq:  "2h",
+		Description: "FireHOL Level 1 - attacks, malware, botnets",
+		UpdateFreq:  "hourly",
 		Enabled:     true,
 	},
 	{
 		Name:        "nginx-badbot-ips",
-		URL:         "https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/blacklist-ips/ips.txt",
+		URL:         "https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/_generator_lists/bad-ip-addresses.list",
 		Format:      "plain", 
 		Description: "Bad bot IPs from nginx blocker",
 		UpdateFreq:  "daily",
