@@ -213,10 +213,10 @@ func cdnBotBlockingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		userAgent := r.Header.Get("User-Agent")
 		clientIP := getClientIP(r)
 		
-		// Check IP blocklist first (most efficient)
-		if isIPBlocked(clientIP) {
-			log.Printf("Blocked IP from CDN content - IP: %s, UA: %s, Path: %s", 
-				clientIP, userAgent, r.URL.Path)
+		// Check IP blocklist for entire request chain (comprehensive)
+		if blocked, blockedIP, source := isRequestBlocked(r); blocked {
+			log.Printf("Blocked IP from CDN content - Blocked IP: %s (via %s), Client: %s, UA: %s, Path: %s", 
+				blockedIP, source, clientIP, userAgent, r.URL.Path)
 			
 			recordIPBlock()
 			
@@ -245,6 +245,9 @@ func cdnBotBlockingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		
 		// Add anti-indexing headers for legitimate CDN requests
 		addAntiIndexHeaders(w)
+		
+		// Track this request for rate monitoring
+		trackRequest(clientIP, userAgent, r.URL.Path)
 		
 		// Continue to next handler for legitimate requests
 		next(w, r)

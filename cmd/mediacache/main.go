@@ -45,6 +45,7 @@ func main() {
 	// Initialize blocking systems
 	initBlockingStats()
 	initIPBlocklist()
+	initRateTracker()
 
 	go maintain()
 	serve()

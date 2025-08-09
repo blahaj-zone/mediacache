@@ -44,6 +44,8 @@ var (
 	blocklistMutex   sync.RWMutex
 	blocklistFile    = getEnv("CACHE_IP_BLOCKLIST", "./blocklist.json")
 	reloadInterval   = time.Duration(getEnv[int64]("CACHE_IP_RELOAD_MINUTES", 30)) * time.Minute
+	trustedProxies   []*net.IPNet
+	trustedProxiesMutex sync.RWMutex
 )
 
 // Initialize the IP blocking system
@@ -61,6 +63,9 @@ func initIPBlocklist() {
 	
 	log.Printf("IP blocklist loaded: %d ranges covering %d IPs from %d sources",
 		currentBlocklist.TotalRanges, currentBlocklist.TotalIPs, len(currentBlocklist.Sources))
+	
+	// Initialize trusted proxies
+	initTrustedProxies()
 	
 	// Start periodic reload with jitter
 	if reloadInterval > 0 {
@@ -261,32 +266,160 @@ func (tree *IPv4RadixTree) Contains(ip net.IP) bool {
 	return node.isBlocked
 }
 
-// Extract IP address from request, handling proxies and load balancers
-func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (most common)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the chain (original client)
-		if ips := strings.Split(xff, ","); len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
+// Initialize trusted proxy networks
+func initTrustedProxies() {
+	trustedProxyCIDRs := getEnv("CACHE_TRUSTED_PROXIES", "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16")
+	
+	if trustedProxyCIDRs == "" {
+		log.Printf("No trusted proxies configured")
+		return
+	}
+	
+	var proxies []*net.IPNet
+	for _, cidr := range strings.Split(trustedProxyCIDRs, ",") {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Printf("Invalid trusted proxy CIDR %s: %v", cidr, err)
+			continue
+		}
+		
+		proxies = append(proxies, ipNet)
+	}
+	
+	trustedProxiesMutex.Lock()
+	trustedProxies = proxies
+	trustedProxiesMutex.Unlock()
+	
+	log.Printf("Loaded %d trusted proxy ranges", len(proxies))
+}
+
+// Check if an IP is a trusted proxy
+func isTrustedProxy(ip string) bool {
+	trustedProxiesMutex.RLock()
+	defer trustedProxiesMutex.RUnlock()
+	
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return false
+	}
+	
+	for _, network := range trustedProxies {
+		if network.Contains(parsedIP) {
+			return true
+		}
+	}
+	return false
+}
+
+// Check if ANY IP in the request chain is blocked
+func isRequestBlocked(r *http.Request) (bool, string, string) {
+	// Get direct connection IP
+	directIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		directIP = r.RemoteAddr
+	}
+	
+	// Collect all IPs in the request chain
+	var chainIPs []string
+	var headers []string
+	
+	// Always include direct connection IP unless it's trusted
+	if !isTrustedProxy(directIP) {
+		chainIPs = append(chainIPs, directIP)
+		headers = append(headers, "RemoteAddr")
+	}
+	
+	// If direct IP is trusted, process proxy headers
+	if isTrustedProxy(directIP) {
+		// Check X-Forwarded-For chain (most common)
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			ips := strings.Split(xff, ",")
+			for i, ip := range ips {
+				ip = strings.TrimSpace(ip)
+				if ip != "" && net.ParseIP(ip) != nil {
+					chainIPs = append(chainIPs, ip)
+					headers = append(headers, fmt.Sprintf("X-Forwarded-For[%d]", i))
+				}
+			}
+		}
+		
+		// Check X-Real-IP header (Nginx)
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			ip := strings.TrimSpace(xri)
+			if net.ParseIP(ip) != nil {
+				chainIPs = append(chainIPs, ip)
+				headers = append(headers, "X-Real-IP")
+			}
+		}
+		
+		// Check CF-Connecting-IP (Cloudflare)
+		if cfip := r.Header.Get("CF-Connecting-IP"); cfip != "" {
+			ip := strings.TrimSpace(cfip)
+			if net.ParseIP(ip) != nil {
+				chainIPs = append(chainIPs, ip)
+				headers = append(headers, "CF-Connecting-IP")
+			}
 		}
 	}
 	
-	// Check X-Real-IP header (Nginx)
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+	// Check each IP in the chain
+	for i, ip := range chainIPs {
+		if isIPBlocked(ip) {
+			return true, ip, headers[i]
+		}
 	}
 	
-	// Check CF-Connecting-IP (Cloudflare)
-	if cfip := r.Header.Get("CF-Connecting-IP"); cfip != "" {
-		return strings.TrimSpace(cfip)
-	}
-	
-	// Fall back to remote address
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	return false, "", ""
+}
+
+// Extract the best client IP from request (for logging/stats)
+func getClientIP(r *http.Request) string {
+	// Get direct connection IP
+	directIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		directIP = r.RemoteAddr
 	}
-	return host
+	
+	// If direct IP is not trusted, use it
+	if !isTrustedProxy(directIP) {
+		return directIP
+	}
+	
+	// Direct IP is trusted, look for client IP in headers
+	// Try X-Forwarded-For first (get the first/leftmost IP which should be the original client)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		ips := strings.Split(xff, ",")
+		for _, ip := range ips {
+			ip = strings.TrimSpace(ip)
+			if ip != "" && net.ParseIP(ip) != nil {
+				return ip
+			}
+		}
+	}
+	
+	// Try X-Real-IP
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		ip := strings.TrimSpace(xri)
+		if net.ParseIP(ip) != nil {
+			return ip
+		}
+	}
+	
+	// Try CF-Connecting-IP
+	if cfip := r.Header.Get("CF-Connecting-IP"); cfip != "" {
+		ip := strings.TrimSpace(cfip)
+		if net.ParseIP(ip) != nil {
+			return ip
+		}
+	}
+	
+	// Fallback to direct IP if no valid client IP found
+	return directIP
 }
 
 // Get blocklist statistics
@@ -301,11 +434,16 @@ func getBlocklistStats() map[string]interface{} {
 		}
 	}
 	
+	trustedProxiesMutex.RLock()
+	trustedCount := len(trustedProxies)
+	trustedProxiesMutex.RUnlock()
+	
 	return map[string]interface{}{
-		"enabled":      true,
-		"last_updated": currentBlocklist.LastUpdated,
-		"total_ips":    currentBlocklist.TotalIPs,
-		"total_ranges": currentBlocklist.TotalRanges,
-		"sources":      currentBlocklist.Sources,
+		"enabled":         true,
+		"last_updated":    currentBlocklist.LastUpdated,
+		"total_ips":       currentBlocklist.TotalIPs,
+		"total_ranges":    currentBlocklist.TotalRanges,
+		"sources":         currentBlocklist.Sources,
+		"trusted_proxies": trustedCount,
 	}
 }

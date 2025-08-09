@@ -40,19 +40,21 @@ func getHealthz(w http.ResponseWriter, r *http.Request) {
 func getStats(w http.ResponseWriter, r *http.Request) {
 	blocklistStats := getBlocklistStats()
 	blockingStatsData := getBlockingStats()
+	rateTrackerStats := getRateTrackerStats()
 	
 	stats := map[string]interface{}{
-		"requests":    stats.requests,
-		"hits":        stats.hits,
-		"misses":      stats.misses,
-		"errors":      stats.errors,
-		"completed":   stats.completed,
-		"disconnects": stats.disconnects,
-		"hit_bytes":   stats.hitBytes,
-		"miss_bytes":  stats.missBytes,
-		"sent_bytes":  stats.sentBytes,
-		"ip_blocking": blocklistStats,
+		"requests":       stats.requests,
+		"hits":           stats.hits,
+		"misses":         stats.misses,
+		"errors":         stats.errors,
+		"completed":      stats.completed,
+		"disconnects":    stats.disconnects,
+		"hit_bytes":      stats.hitBytes,
+		"miss_bytes":     stats.missBytes,
+		"sent_bytes":     stats.sentBytes,
+		"ip_blocking":    blocklistStats,
 		"blocking_stats": blockingStatsData,
+		"rate_tracking":  rateTrackerStats,
 	}
 	
 	w.Header().Set("Content-Type", "application/json")
