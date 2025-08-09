@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/bits"
 	"net"
 	"net/http"
 	"os"
@@ -319,14 +320,14 @@ func parseIPList(reader io.Reader, format string) ([]string, error) {
 	return ranges, nil
 }
 
-// Optimize CIDR ranges by merging overlapping ones
+// Optimize CIDR ranges by merging overlapping and adjacent ones
 func optimizeCIDRRanges(ranges []string) []string {
 	if len(ranges) == 0 {
 		return ranges
 	}
 	
-	// Parse all ranges
-	var nets []*net.IPNet
+	// Parse all ranges and separate IPv4/IPv6
+	var ipv4Nets, ipv6Nets []*net.IPNet
 	for _, rangeStr := range ranges {
 		_, ipNet, err := net.ParseCIDR(rangeStr)
 		if err != nil {
@@ -335,24 +336,259 @@ func optimizeCIDRRanges(ranges []string) []string {
 			}
 			continue
 		}
-		nets = append(nets, ipNet)
+		
+		if ipNet.IP.To4() != nil {
+			ipv4Nets = append(ipv4Nets, ipNet)
+		} else {
+			ipv6Nets = append(ipv6Nets, ipNet)
+		}
 	}
 	
-	// TODO: Implement more sophisticated merging algorithm
-	// For now, just deduplicate and return
-	var result []string
-	seen := make(map[string]bool)
+	// Optimize IPv4 and IPv6 separately with progress logging
+	if *verbose {
+		log.Printf("Optimizing %d IPv4 ranges and %d IPv6 ranges", len(ipv4Nets), len(ipv6Nets))
+	}
 	
-	for _, net := range nets {
-		cidr := net.String()
-		if !seen[cidr] {
-			seen[cidr] = true
-			result = append(result, cidr)
-		}
+	optimizedIPv4 := optimizeRanges(ipv4Nets)
+	if *verbose {
+		log.Printf("IPv4 optimization: %d -> %d ranges", len(ipv4Nets), len(optimizedIPv4))
+	}
+	
+	optimizedIPv6 := optimizeRanges(ipv6Nets)
+	if *verbose {
+		log.Printf("IPv6 optimization: %d -> %d ranges", len(ipv6Nets), len(optimizedIPv6))
+	}
+	
+	// Combine results
+	var result []string
+	for _, net := range optimizedIPv4 {
+		result = append(result, net.String())
+	}
+	for _, net := range optimizedIPv6 {
+		result = append(result, net.String())
 	}
 	
 	sort.Strings(result)
 	return result
+}
+
+// Optimize CIDR ranges - remove duplicates, contained ranges, and merge adjacent IPv4 ranges
+func optimizeRanges(nets []*net.IPNet) []*net.IPNet {
+	if len(nets) == 0 {
+		return nets
+	}
+	
+	// Remove exact duplicates
+	seen := make(map[string]*net.IPNet)
+	for _, net := range nets {
+		key := net.String()
+		seen[key] = net
+	}
+	
+	// Convert back to slice
+	var unique []*net.IPNet
+	for _, net := range seen {
+		unique = append(unique, net)
+	}
+	
+	// Remove ranges that are fully contained in others
+	var filtered []*net.IPNet
+	for i, net1 := range unique {
+		contained := false
+		for j, net2 := range unique {
+			if i != j && isContained(net1, net2) {
+				contained = true
+				break
+			}
+		}
+		if !contained {
+			filtered = append(filtered, net1)
+		}
+	}
+	
+	// Simple adjacent merging for IPv4 only (IPv6 is more complex)
+	var ipv4Nets, ipv6Nets []*net.IPNet
+	for _, net := range filtered {
+		if net.IP.To4() != nil {
+			ipv4Nets = append(ipv4Nets, net)
+		} else {
+			ipv6Nets = append(ipv6Nets, net)
+		}
+	}
+	
+	// Merge adjacent IPv4 ranges
+	mergedIPv4 := mergeAdjacentIPv4(ipv4Nets)
+	
+	// Combine results
+	var result []*net.IPNet
+	result = append(result, mergedIPv4...)
+	result = append(result, ipv6Nets...)
+	
+	return result
+}
+
+// Merge adjacent IPv4 CIDR ranges
+func mergeAdjacentIPv4(nets []*net.IPNet) []*net.IPNet {
+	if len(nets) <= 1 {
+		return nets
+	}
+	
+	
+	// Convert networks to intervals
+	var intervals []ipv4Interval
+	for _, net := range nets {
+		ip := net.IP.To4()
+		if ip == nil {
+			continue
+		}
+		
+		start := uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+		ones, bits := net.Mask.Size()
+		if bits != 32 {
+			continue
+		}
+		
+		size := uint32(1) << (32 - ones)
+		end := start + size - 1
+		
+		intervals = append(intervals, ipv4Interval{start: start, end: end, net: net})
+	}
+	
+	// Sort by start address
+	sort.Slice(intervals, func(i, j int) bool {
+		return intervals[i].start < intervals[j].start
+	})
+	
+	// Merge overlapping and adjacent intervals
+	var merged []ipv4Interval
+	for _, current := range intervals {
+		if len(merged) == 0 {
+			merged = append(merged, current)
+			continue
+		}
+		
+		last := &merged[len(merged)-1]
+		
+		// Merge if overlapping or adjacent
+		if current.start <= last.end+1 {
+			if current.end > last.end {
+				last.end = current.end
+			}
+		} else {
+			merged = append(merged, current)
+		}
+	}
+	
+	// Convert back to CIDR ranges
+	var result []*net.IPNet
+	for _, interval := range merged {
+		if interval.start == interval.end {
+			// Single IP
+			result = append(result, createSingleIPCIDR(interval.start))
+		} else {
+			// Try to preserve original CIDR if it matches exactly
+			if interval.net != nil && intervalMatchesNetwork(interval, interval.net) {
+				result = append(result, interval.net)
+			} else {
+				// Break into power-of-2 blocks
+				result = append(result, intervalToPowerOf2CIDRs(interval.start, interval.end)...)
+			}
+		}
+	}
+	
+	return result
+}
+
+// Create a /32 CIDR for a single IP
+func createSingleIPCIDR(ip uint32) *net.IPNet {
+	ipBytes := make(net.IP, 4)
+	ipBytes[0] = byte(ip >> 24)
+	ipBytes[1] = byte(ip >> 16)
+	ipBytes[2] = byte(ip >> 8)
+	ipBytes[3] = byte(ip)
+	return &net.IPNet{IP: ipBytes, Mask: net.CIDRMask(32, 32)}
+}
+
+// IPv4 interval representation
+type ipv4Interval struct {
+	start uint32
+	end   uint32
+	net   *net.IPNet
+}
+
+// Check if interval matches the original network exactly
+func intervalMatchesNetwork(interval ipv4Interval, net *net.IPNet) bool {
+	ip := net.IP.To4()
+	if ip == nil {
+		return false
+	}
+	
+	start := uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+	ones, _ := net.Mask.Size()
+	size := uint32(1) << (32 - ones)
+	
+	return start == interval.start && size == (interval.end-interval.start+1)
+}
+
+// Convert IP interval to power-of-2 CIDR blocks
+func intervalToPowerOf2CIDRs(start, end uint32) []*net.IPNet {
+	var cidrs []*net.IPNet
+	current := start
+	
+	for current <= end {
+		// Find largest aligned power-of-2 block that fits
+		remaining := end - current + 1
+		blockSize := uint32(1)
+		
+		// Find largest power of 2 that fits and is properly aligned
+		for blockSize <= remaining && (current&(blockSize-1)) == 0 && blockSize <= (1<<20) {
+			blockSize <<= 1
+		}
+		blockSize >>= 1
+		
+		if blockSize == 0 {
+			blockSize = 1
+		}
+		
+		// Create CIDR for this block
+		prefixLen := 32 - bits.Len32(blockSize-1)
+		if prefixLen < 0 || prefixLen > 32 {
+			prefixLen = 32
+		}
+		
+		ip := make(net.IP, 4)
+		ip[0] = byte(current >> 24)
+		ip[1] = byte(current >> 16)
+		ip[2] = byte(current >> 8)
+		ip[3] = byte(current)
+		
+		mask := net.CIDRMask(prefixLen, 32)
+		cidrs = append(cidrs, &net.IPNet{IP: ip.Mask(mask), Mask: mask})
+		
+		current += blockSize
+	}
+	
+	return cidrs
+}
+
+
+// Check if net1 is fully contained within net2
+func isContained(net1, net2 *net.IPNet) bool {
+	ones1, bits1 := net1.Mask.Size()
+	ones2, bits2 := net2.Mask.Size()
+	
+	// Different IP versions
+	if bits1 != bits2 {
+		return false
+	}
+	
+	// net1 can only be contained in net2 if net2 has fewer host bits (larger network)
+	if ones2 > ones1 {
+		return false
+	}
+	
+	// Check if net1's network address falls within net2
+	return net2.Contains(net1.IP)
 }
 
 // Count approximate number of IPs in CIDR ranges
@@ -393,12 +629,21 @@ func writeBlocklist(filename string, blocklist ProcessedBlocklist) error {
 		return fmt.Errorf("marshaling JSON: %v", err)
 	}
 	
-	// Write to temporary file first, then rename (atomic operation)
-	tempFile := filename + ".tmp"
+	// Generate unique temporary filename with PID and timestamp to avoid conflicts
+	tempFile := fmt.Sprintf("%s.tmp.%d.%d", filename, os.Getpid(), time.Now().UnixNano())
+	
+	// Write to temporary file first
 	if err := os.WriteFile(tempFile, data, 0644); err != nil {
 		return fmt.Errorf("writing temporary file: %v", err)
 	}
 	
+	// Ensure data is synced to disk before rename
+	if file, err := os.OpenFile(tempFile, os.O_RDWR, 0644); err == nil {
+		file.Sync() // Force sync to disk
+		file.Close()
+	}
+	
+	// Atomic rename operation
 	if err := os.Rename(tempFile, filename); err != nil {
 		os.Remove(tempFile) // Clean up on failure
 		return fmt.Errorf("renaming file: %v", err)

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -41,6 +43,7 @@ var (
 	currentBlocklist *IPBlocklist
 	blocklistMutex   sync.RWMutex
 	blocklistFile    = getEnv("CACHE_IP_BLOCKLIST", "./blocklist.json")
+	reloadInterval   = time.Duration(getEnv[int64]("CACHE_IP_RELOAD_MINUTES", 30)) * time.Minute
 )
 
 // Initialize the IP blocking system
@@ -58,6 +61,11 @@ func initIPBlocklist() {
 	
 	log.Printf("IP blocklist loaded: %d ranges covering %d IPs from %d sources",
 		currentBlocklist.TotalRanges, currentBlocklist.TotalIPs, len(currentBlocklist.Sources))
+	
+	// Start periodic reload with jitter
+	if reloadInterval > 0 {
+		go startPeriodicReload()
+	}
 }
 
 // Load IP blocklist from file and build optimized lookup structures
@@ -109,6 +117,41 @@ func reloadIPBlocklist() error {
 		return fmt.Errorf("no blocklist file configured")
 	}
 	return loadIPBlocklist(blocklistFile)
+}
+
+// Start periodic reload with jitter to prevent thundering herd
+func startPeriodicReload() {
+	// Add random jitter: ±25% of reload interval (max 15 minutes for 30min interval)
+	jitterRange := reloadInterval / 4
+	jitterMax := big.NewInt(int64(jitterRange.Nanoseconds()))
+	
+	for {
+		// Generate random jitter
+		jitterNanos, err := rand.Int(rand.Reader, jitterMax)
+		if err != nil {
+			// Fallback to base interval if random fails
+			time.Sleep(reloadInterval)
+		} else {
+			// Apply jitter: base interval ± random amount
+			jitter := time.Duration(jitterNanos.Int64()) - jitterRange/2
+			actualInterval := reloadInterval + jitter
+			
+			log.Printf("Next IP blocklist reload in %v", actualInterval)
+			time.Sleep(actualInterval)
+		}
+		
+		// Attempt to reload
+		if err := reloadIPBlocklist(); err != nil {
+			log.Printf("Failed to reload IP blocklist: %v", err)
+		} else {
+			blocklistMutex.RLock()
+			if currentBlocklist != nil {
+				log.Printf("IP blocklist reloaded: %d ranges covering %d IPs from %d sources",
+					currentBlocklist.TotalRanges, currentBlocklist.TotalIPs, len(currentBlocklist.Sources))
+			}
+			blocklistMutex.RUnlock()
+		}
+	}
 }
 
 // Check if an IP address is blocked
