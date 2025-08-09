@@ -43,7 +43,14 @@ func handleCache(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	query := r.URL.RawQuery
 
+	if (noQuery != "") {
+		query = ""
+	}
+
 	filename := path + "?" + query
+	if (query == "") {
+		filename = path
+	}
 
 	if filename == "/" {
 		getRoot(w, r)
@@ -58,16 +65,6 @@ func handleCache(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filename = strings.TrimPrefix(filename, prefix)
-	}
-
-	// Check for invalid characters
-	if strings.Contains(filename, "..") ||
-		strings.Contains(filename, "~") ||
-		strings.Contains(filename, "/") {
-		log.Printf("error with request for `%s`, contains invalid character", filename)
-		http.Error(w, "invalid path", http.StatusBadRequest)
-		stats.errors++
-		return
 	}
 
 	// Acquire a read lock for the file

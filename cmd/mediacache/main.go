@@ -17,6 +17,7 @@ var (
 	cacheDir  = getEnv("CACHE_DIR", "./cache")
 	upstreams = strings.Split(getEnv("CACHE_UPSTREAM", "https://example.com"), " ")
 	prefix    = getEnv("CACHE_PREFIX", "/")
+	noQuery   = getEnv("CACHE_STRIP_QUERY", "")
 	reply404  = getEnv("CACHE_REPLY_404", "")
 	reply403  = getEnv("CACHE_REPLY_403", "")
 	reply500  = getEnv("CACHE_REPLY_500", "")

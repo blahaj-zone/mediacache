@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -100,20 +101,26 @@ func parseRangeHeader(rangeHeader string, fileSize int64) (*rangeRequest, error)
 }
 
 func checkExists(filename string) bool {
-	metaFile := path.Join(cacheDir, filename+".meta")
+	// URL encode filename for cache file operations
+	encodedFilename := url.QueryEscape(filename)
+	
+	metaFile := path.Join(cacheDir, encodedFilename+".meta")
 	_, err := os.Stat(metaFile)
 	if err != nil {
 		return false
 	}
 
-	cacheFile := path.Join(cacheDir, filename)
+	cacheFile := path.Join(cacheDir, encodedFilename)
 	_, err = os.Stat(cacheFile)
 	return err == nil
 }
 
 func fetchFile(filename string) (n int64, err error) {
-	metaFile := path.Join(cacheDir, filename+".meta")
-	cacheFile := path.Join(cacheDir, filename)
+	// URL encode filename for cache file operations
+	encodedFilename := url.QueryEscape(filename)
+	
+	metaFile := path.Join(cacheDir, encodedFilename+".meta")
+	cacheFile := path.Join(cacheDir, encodedFilename)
 
 	defer func() {
 		if err != nil {
@@ -122,7 +129,7 @@ func fetchFile(filename string) (n int64, err error) {
 		}
 	}()
 
-	// Get file from source
+	// Get file from source (use original filename for URL construction)
 	var resp *http.Response
 	var url string
 	for _, upstream := range upstreams {
@@ -139,7 +146,7 @@ func fetchFile(filename string) (n int64, err error) {
 	}
 	defer resp.Body.Close()
 
-	// Add file to cache
+	// Add file to cache (use encoded filename for cache file)
 	var file *os.File
 	file, err = os.Create(cacheFile)
 	if err != nil {
@@ -187,7 +194,7 @@ func fetchFile(filename string) (n int64, err error) {
 	}
 	metaData = append(metaData, '\n')
 
-	metaFile = path.Join(cacheDir, filename+".meta")
+	metaFile = path.Join(cacheDir, encodedFilename+".meta")
 	err = os.WriteFile(metaFile, metaData, 0644)
 	if err != nil {
 		return bytes, err
@@ -197,7 +204,10 @@ func fetchFile(filename string) (n int64, err error) {
 }
 
 func serveFile(w http.ResponseWriter, r *http.Request, filename string, eTags []string, ifModifiedSince time.Time, result string) (n int64, err error) {
-	metaFile := path.Join(cacheDir, filename+".meta")
+	// URL encode filename for cache file operations
+	encodedFilename := url.QueryEscape(filename)
+	
+	metaFile := path.Join(cacheDir, encodedFilename+".meta")
 	metaData, err := os.ReadFile(metaFile)
 	if err != nil {
 		return 0, err
@@ -209,7 +219,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, filename string, eTags []
 		return 0, err
 	}
 
-	dataFile := path.Join(cacheDir, filename)
+	dataFile := path.Join(cacheDir, encodedFilename)
 	file, err := os.Open(dataFile)
 	if err != nil {
 		return 0, err
