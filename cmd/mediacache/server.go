@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -34,6 +35,47 @@ func getRoot(w http.ResponseWriter, r *http.Request) {
 
 func getHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
+}
+
+func getStats(w http.ResponseWriter, r *http.Request) {
+	blocklistStats := getBlocklistStats()
+	blockingStatsData := getBlockingStats()
+	
+	stats := map[string]interface{}{
+		"requests":    stats.requests,
+		"hits":        stats.hits,
+		"misses":      stats.misses,
+		"errors":      stats.errors,
+		"completed":   stats.completed,
+		"disconnects": stats.disconnects,
+		"hit_bytes":   stats.hitBytes,
+		"miss_bytes":  stats.missBytes,
+		"sent_bytes":  stats.sentBytes,
+		"ip_blocking": blocklistStats,
+		"blocking_stats": blockingStatsData,
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func reloadBlocklist(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	err := reloadIPBlocklist()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to reload blocklist: %v", err), http.StatusInternalServerError)
+		return
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "reloaded",
+		"stats":  getBlocklistStats(),
+	})
 }
 
 func handleCache(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +246,8 @@ func serve() {
 	http.HandleFunc("/", cdnBotBlockingMiddleware(handleCache))
 	http.HandleFunc("/healthz", getHealthz)
 	http.HandleFunc("/robots.txt", getRobotsTxt)
+	http.HandleFunc("/stats", getStats)
+	http.HandleFunc("/reload-blocklist", reloadBlocklist)
 
 	log.Fatal(http.ListenAndServe(listen, nil))
 }

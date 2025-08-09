@@ -42,6 +42,10 @@ func main() {
 	log.Printf("cache dir: %s", cacheDir)
 	log.Printf("prefix: %s", prefix)
 
+	// Initialize blocking systems
+	initBlockingStats()
+	initIPBlocklist()
+
 	go maintain()
 	serve()
 }

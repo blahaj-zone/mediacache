@@ -44,8 +44,8 @@ var botPatterns = []string{
 	"imagesift", "picscout", "tineye",
 
 	// Generic patterns
-	"bot", "crawler", "spider", "scraper", "fetch", "http",
-	"headless", "phantom", "chrome",
+	"bot", "crawler", "spider", "scraper",
+	"headless", "phantom",
 }
 
 // Comprehensive list of known bot user agents (exact matches)
@@ -145,8 +145,7 @@ func isBotUserAgent(userAgent string) bool {
 	if strings.Contains(lowerUA, "bot") ||
 		strings.Contains(lowerUA, "crawl") ||
 		strings.Contains(lowerUA, "spider") ||
-		strings.Contains(lowerUA, "scrape") ||
-		strings.Contains(lowerUA, "fetch") {
+		strings.Contains(lowerUA, "scrape") {
 		return true
 	}
 
@@ -212,12 +211,29 @@ func cdnBotBlockingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 		
 		userAgent := r.Header.Get("User-Agent")
+		clientIP := getClientIP(r)
+		
+		// Check IP blocklist first (most efficient)
+		if isIPBlocked(clientIP) {
+			log.Printf("Blocked IP from CDN content - IP: %s, UA: %s, Path: %s", 
+				clientIP, userAgent, r.URL.Path)
+			
+			recordIPBlock()
+			
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("Access denied: IP address blocked"))
+			stats.errors++
+			return
+		}
 		
 		// Check if it's a bot requesting CDN content
 		if isBotUserAgent(userAgent) {
 			// Log the blocked request
 			log.Printf("Blocked bot from CDN content - UA: %s, IP: %s, Path: %s", 
-				userAgent, r.RemoteAddr, r.URL.Path)
+				userAgent, clientIP, r.URL.Path)
+			
+			recordUABlock(userAgent)
 			
 			// Return 403 Forbidden for bots
 			w.Header().Set("Content-Type", "text/plain")
