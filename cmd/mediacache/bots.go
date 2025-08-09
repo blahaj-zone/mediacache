@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -145,13 +146,22 @@ var legitimateSocialBots = []string{
 	"zulipbot", "rocket.chat", "mattermost",
 }
 
+// Clean user agent by removing URLs starting with +
+func cleanUserAgent(userAgent string) string {
+	// Remove URLs starting with + (with or without protocol)
+	// Matches: +https://domain.com/, +http://domain.com, +domain.com/, +domain.com
+	re := regexp.MustCompile(`\+(?:https?://)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/?`)
+	return re.ReplaceAllString(userAgent, "")
+}
+
 // Check if a user agent is a legitimate social media bot
 func isLegitimateBot(userAgent string) bool {
 	if userAgent == "" {
 		return false
 	}
 
-	lowerUA := strings.ToLower(userAgent)
+	cleanedUA := cleanUserAgent(userAgent)
+	lowerUA := strings.ToLower(cleanedUA)
 	
 	for _, legitBot := range legitimateSocialBots {
 		if strings.Contains(lowerUA, legitBot) {
@@ -168,12 +178,15 @@ func isBotUserAgent(userAgent string) bool {
 		return true // Empty user agent is suspicious
 	}
 
+	// Clean user agent first
+	cleanedUA := cleanUserAgent(userAgent)
+
 	// First check if it's a legitimate social media bot
 	if isLegitimateBot(userAgent) {
 		return false // Allow legitimate social bots
 	}
 
-	lowerUA := strings.ToLower(userAgent)
+	lowerUA := strings.ToLower(cleanedUA)
 
 	// Check exact matches first
 	if knownBots[userAgent] {
